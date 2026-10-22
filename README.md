@@ -41,3 +41,7 @@ i686-w64-mingw32-gcc -shared -O2 -o dinput8.dll src/darkmode.c -Wl,--kill-at -st
 - Das Hauptfenster ist getestet. Einstellungen, Dialoge und Meldungsfenster nicht, dort kann noch Helles übrig sein.
 - Die Farbe der Gruppen-Überschriften in der Dateiliste ist auf Windows 11 (Build 26100) abgestimmt. Auf anderen Windows-Versionen kann sie anders aussehen.
 - Es werden undokumentierte `uxtheme`-Funktionen (Ordinal 135 und 136) benutzt, die Windows ändern kann.
+
+## Mitmachen
+
+Jeder darf das Projekt weiterentwickeln, forken und verbessern (MIT-Lizenz, siehe `LICENSE`). Verbesserungen, Fehlerberichte mit Screenshot und Pull Requests sind willkommen. Besonders hilfreich wären Tests der Dialoge und Einstellungsfenster sowie Rückmeldungen zu anderen Windows-Versionen.
