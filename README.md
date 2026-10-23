@@ -1,5 +1,7 @@
 # Open IV Dark-Mode Update (Not OFFICIAL)
 
+![Downloads](https://img.shields.io/github/downloads/M4XL1M1T/Open-IV-Dark-Mode-Update-Not-OFFICIAL-/total)
+
 Unofficial dark mode for **OpenIV 4.1** (32-bit, Windows 10/11). Not affiliated with New Technology Studio or the OpenIV team. Use at your own risk.
 
 OpenIV has no complete dark mode. This project is a small helper DLL that is loaded when OpenIV starts and converts the window colours to a dark palette. `OpenIV.exe` itself is not modified.
