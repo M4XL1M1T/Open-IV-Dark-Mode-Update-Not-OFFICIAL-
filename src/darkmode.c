@@ -226,6 +226,315 @@ static void style_window(HWND h)
     }
 }
 
+/*
+ * Title bars are drawn by Windows and follow the user's light/dark setting (or the accent colour),
+ * so on a light Windows they stay white. Ask DWM for a dark caption on every top-level window.
+ *   attribute 20 (19 before Windows 10 2004): immersive dark mode, Windows 10 1809+
+ *   attributes 35 / 36: caption and text colour, Windows 11 only, also overrides the accent colour
+ */
+static void dark_title_bar(HWND h)
+{
+    static HRESULT (WINAPI *setAttr)(HWND, DWORD, LPCVOID, DWORD);
+    if (!setAttr) {
+        HMODULE m = LoadLibraryA("dwmapi.dll");
+        if (m) setAttr = (HRESULT(WINAPI *)(HWND, DWORD, LPCVOID, DWORD))GetProcAddress(m, "DwmSetWindowAttribute");
+        if (!setAttr) return;
+    }
+    BOOL on = TRUE;
+    COLORREF caption = RGB(32, 32, 32), text = RGB(235, 235, 235);
+    if (FAILED(setAttr(h, 20, &on, sizeof on))) setAttr(h, 19, &on, sizeof on);
+    setAttr(h, 35, &caption, sizeof caption);
+    setAttr(h, 36, &text, sizeof text);
+}
+
+/*
+ * The "Video tutorials" (YouTube) toolbar and the full screen button sit in the cool bar above the file list.
+ * Keep them hidden: a subclass proc turns every attempt to show them into a hide.
+ *   TAeroThemeButton in the cool bar panel: the full screen button
+ *   TToolBar with exactly one button in the cool bar panel: the video tutorials link
+ */
+#define TB_BUTTONCOUNT_ 0x0418
+
+static LRESULT CALLBACK hidden_proc(HWND h, UINT m, WPARAM w, LPARAM l)
+{
+    WNDPROC old = (WNDPROC)GetPropW(h, L"DarkModeOldProc");
+    WCHAR cls[64];
+    int hide = 1;
+    if (GetClassNameW(h, cls, 64) && lstrcmpW(cls, L"TToolBar") == 0)
+        hide = CallWindowProcW(old, h, TB_BUTTONCOUNT_, 0, 0) == 1; /* not SendMessage: the VCL would call us again */
+    if (hide) {
+        if (m == WM_WINDOWPOSCHANGING) {
+            WINDOWPOS *p = (WINDOWPOS *)l;
+            p->flags = (p->flags & ~SWP_SHOWWINDOW) | SWP_HIDEWINDOW;
+        } else if (m == WM_SHOWWINDOW && w) {
+            return 0;
+        }
+    }
+    if (m == WM_NCDESTROY) RemovePropW(h, L"DarkModeOldProc");
+    return CallWindowProcW(old, h, m, w, l);
+}
+
+static void hide_cool_bar_extras(HWND wnd, HWND parent)
+{
+    WCHAR cls[64], pcls[64], gcls[64];
+    HWND grand = parent ? GetParent(parent) : NULL;
+    if (!grand || !GetClassNameW(wnd, cls, 64) || !GetClassNameW(parent, pcls, 64) || !GetClassNameW(grand, gcls, 64)) return;
+    if (lstrcmpW(pcls, L"TPanel") != 0 || lstrcmpW(gcls, L"TCoolBar") != 0) return;
+    if (lstrcmpW(cls, L"TAeroThemeButton") != 0 && lstrcmpW(cls, L"TToolBar") != 0) return;
+    WNDPROC old = (WNDPROC)SetWindowLongPtrW(wnd, GWLP_WNDPROC, (LONG_PTR)hidden_proc);
+    SetPropW(wnd, L"DarkModeOldProc", (HANDLE)old);
+}
+
+/* ---------- message boxes ---------- */
+
+/*
+ * MessageBox is drawn entirely inside user32 (white body, grey button strip), where no colour call can
+ * be intercepted. Replace it by a small dialog of our own with the same buttons, icons, default button,
+ * keys and return values. Unusual flags fall back to the system dialog.
+ */
+typedef struct {
+    const WCHAR *text, *caption;
+    UINT flags;
+    int nbtn, ids[4], def, result, done;
+    WCHAR label[4][40];
+    HWND btn[4];
+    HFONT font;
+    HICON icon;
+    int scale100, bodyH, footerH, iconX, iconY, textX, textY;
+    RECT textRc;
+} DarkBox;
+
+#define DB_CLASS L"OpenIVDarkMessageBox"
+
+
+static int db_px(const DarkBox *d, int v) { return MulDiv(v, d->scale100, 100); }
+
+static LRESULT CALLBACK db_proc(HWND h, UINT m, WPARAM w, LPARAM l)
+{
+    DarkBox *d = (DarkBox *)GetWindowLongPtrW(h, GWLP_USERDATA);
+    if (m == WM_NCCREATE) {
+        d = (DarkBox *)((CREATESTRUCTW *)l)->lpCreateParams;
+        SetWindowLongPtrW(h, GWLP_USERDATA, (LONG_PTR)d);
+    } else if (d) {
+        switch (m) {
+        case WM_ERASEBKGND:
+            return 1;
+        case WM_PAINT: {
+            PAINTSTRUCT ps;
+            HDC dc = BeginPaint(h, &ps);
+            RECT rc, body, foot;
+            GetClientRect(h, &rc);
+            body = rc; body.bottom = d->bodyH;
+            foot = rc; foot.top = d->bodyH;
+            HBRUSH b1 = CreateSolidBrush(xform(RGB(255, 255, 255))), b2 = CreateSolidBrush(xform(RGB(240, 240, 240)));
+            FillRect(dc, &body, b1);
+            FillRect(dc, &foot, b2);
+            DeleteObject(b1); DeleteObject(b2);
+            if (d->icon) DrawIconEx(dc, d->iconX, d->iconY, d->icon, 0, 0, 0, NULL, DI_NORMAL);
+            HFONT of = (HFONT)SelectObject(dc, d->font);
+            SetBkMode(dc, TRANSPARENT);
+            SetTextColor(dc, RGB(240, 240, 240));
+            RECT tr = d->textRc;
+            OffsetRect(&tr, d->textX, d->textY);
+            DrawTextW(dc, d->text, -1, &tr, DT_WORDBREAK | DT_NOPREFIX | DT_LEFT);
+            SelectObject(dc, of);
+            EndPaint(h, &ps);
+            return 0;
+        }
+        case WM_COMMAND:
+                        if (HIWORD(w) == BN_CLICKED) {
+                for (int i = 0; i < d->nbtn; i++) if (d->ids[i] == (int)LOWORD(w)) { d->result = d->ids[i]; d->done = 1; }
+            }
+            PostMessageW(h, WM_NULL, 0, 0); /* wake the message loop: sent messages are handled inside GetMessage */
+            return 0;
+        case WM_CLOSE: {
+            int cancel = 0, ok = 0;
+            for (int i = 0; i < d->nbtn; i++) { cancel |= d->ids[i] == IDCANCEL; ok |= d->ids[i] == IDOK; }
+            if (cancel || (ok && d->nbtn == 1)) { d->result = cancel ? IDCANCEL : IDOK; d->done = 1; PostMessageW(h, WM_NULL, 0, 0); }
+            return 0;
+        }
+        }
+    }
+    return DefWindowProcW(h, m, w, l);
+}
+
+static int dark_message_box(HWND owner, const WCHAR *text, const WCHAR *caption, UINT flags)
+{
+    static const int sets[7][4] = {
+        { IDOK }, { IDOK, IDCANCEL }, { IDABORT, IDRETRY, IDIGNORE }, { IDYES, IDNO, IDCANCEL },
+        { IDYES, IDNO }, { IDRETRY, IDCANCEL }, { IDCANCEL, 10 /* try again */, 11 /* continue */ } };
+    static const int nsets[7] = { 1, 2, 3, 3, 2, 2, 3 };
+    static const int str_id[12] = { 0, 800, 801, 802, 803, 804, 805, 806, 807, 808, 809, 810 };
+    static int registered;
+    DarkBox d;
+    ZeroMemory(&d, sizeof d);
+    UINT kind = flags & MB_TYPEMASK;
+    if (kind > 6 || (flags & (MB_SERVICE_NOTIFICATION | MB_HELP))) return 0;
+    if (!text) text = L"";
+    if (!caption) caption = L"";
+    d.text = text; d.caption = caption; d.flags = flags;
+    d.nbtn = nsets[kind];
+    HMODULE u32 = GetModuleHandleW(L"user32.dll");
+    for (int i = 0; i < d.nbtn; i++) {
+        d.ids[i] = sets[kind][i];
+        d.label[i][0] = 0;
+        if (d.ids[i] < 12 && str_id[d.ids[i]]) LoadStringW(u32, str_id[d.ids[i]], d.label[i], 40);
+    }
+    d.def = (int)((flags & MB_DEFMASK) >> 8);
+    if (d.def >= d.nbtn) d.def = 0;
+    switch (flags & MB_ICONMASK) {
+    case MB_ICONERROR:       d.icon = LoadIconW(NULL, (LPCWSTR)IDI_ERROR); break;
+    case MB_ICONQUESTION:    d.icon = LoadIconW(NULL, (LPCWSTR)IDI_QUESTION); break;
+    case MB_ICONWARNING:     d.icon = LoadIconW(NULL, (LPCWSTR)IDI_WARNING); break;
+    case MB_ICONINFORMATION: d.icon = LoadIconW(NULL, (LPCWSTR)IDI_INFORMATION); break;
+    }
+
+    dark_init_once();
+    if (!registered) {
+        WNDCLASSEXW wc;
+        ZeroMemory(&wc, sizeof wc);
+        wc.cbSize = sizeof wc;
+        wc.lpfnWndProc = db_proc;
+        wc.hInstance = GetModuleHandleW(NULL);
+        wc.hCursor = LoadCursorW(NULL, (LPCWSTR)IDC_ARROW);
+        wc.lpszClassName = DB_CLASS;
+        if (!RegisterClassExW(&wc)) return 0;
+        registered = 1;
+    }
+    if (owner && !IsWindow(owner)) owner = NULL;
+    if (!owner) owner = GetActiveWindow();
+    if (owner) owner = GetAncestor(owner, GA_ROOT);
+
+    HDC sdc = GetDC(NULL);
+    d.scale100 = MulDiv(GetDeviceCaps(sdc, LOGPIXELSX), 100, 96);
+    NONCLIENTMETRICSW ncm;
+    ZeroMemory(&ncm, sizeof ncm);
+    ncm.cbSize = sizeof ncm;
+    SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof ncm, &ncm, 0);
+    d.font = CreateFontIndirectW(&ncm.lfMessageFont);
+    HFONT of = (HFONT)SelectObject(sdc, d.font);
+
+    int margin = db_px(&d, 20), gap = db_px(&d, 14), bh = db_px(&d, 26), bgap = db_px(&d, 8), maxw = db_px(&d, 420);
+    int iconW = d.icon ? GetSystemMetrics(SM_CXICON) : 0, iconH = d.icon ? GetSystemMetrics(SM_CYICON) : 0;
+    int textLeft = margin + (iconW ? iconW + gap : 0);
+    RECT tr = { 0, 0, maxw - textLeft - margin, 0 };
+    DrawTextW(sdc, text, -1, &tr, DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX | DT_LEFT);
+    d.textRc = tr;
+
+    int bw[4], btotal = 0;
+    for (int i = 0; i < d.nbtn; i++) {
+        RECT br = { 0, 0, 0, 0 };
+        DrawTextW(sdc, d.label[i], -1, &br, DT_CALCRECT | DT_SINGLELINE);
+        bw[i] = br.right - br.left + db_px(&d, 28);
+        if (bw[i] < db_px(&d, 80)) bw[i] = db_px(&d, 80);
+        btotal += bw[i] + (i ? bgap : 0);
+    }
+    SIZE cs = { 0, 0 };
+    GetTextExtentPoint32W(sdc, caption, lstrlenW(caption), &cs);
+    SelectObject(sdc, of);
+    ReleaseDC(NULL, sdc);
+
+    int textH = tr.bottom - tr.top, blockH = textH > iconH ? textH : iconH;
+    int cw = textLeft + (tr.right - tr.left) + margin;
+    if (cw < btotal + 2 * margin) cw = btotal + 2 * margin;
+    if (cw < cs.cx + db_px(&d, 90)) cw = cs.cx + db_px(&d, 90);
+    if (cw < db_px(&d, 240)) cw = db_px(&d, 240);
+    d.bodyH = margin + blockH + margin;
+    d.footerH = db_px(&d, 14) + bh + db_px(&d, 14);
+    d.iconX = margin; d.iconY = margin;
+    d.textX = textLeft; d.textY = margin + (iconH > textH ? (iconH - textH) / 2 : 0);
+    int ch = d.bodyH + d.footerH;
+
+    DWORD style = WS_POPUP | WS_CAPTION | WS_SYSMENU, ex = WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT;
+    if (flags & (MB_TOPMOST | MB_SYSTEMMODAL)) ex |= WS_EX_TOPMOST;
+    RECT wr = { 0, 0, cw, ch };
+    AdjustWindowRectEx(&wr, style, FALSE, ex);
+    RECT area;
+    if (owner && IsWindowVisible(owner) && !IsIconic(owner)) GetWindowRect(owner, &area);
+    else SystemParametersInfoW(SPI_GETWORKAREA, 0, &area, 0);
+    int ww = wr.right - wr.left, wh = wr.bottom - wr.top;
+    int wx = area.left + (area.right - area.left - ww) / 2, wy = area.top + (area.bottom - area.top - wh) / 2;
+    RECT wa;
+    SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0);
+    if (wx + ww > wa.right) wx = wa.right - ww;
+    if (wy + wh > wa.bottom) wy = wa.bottom - wh;
+    if (wx < wa.left) wx = wa.left;
+    if (wy < wa.top) wy = wa.top;
+
+    HWND dlg = CreateWindowExW(ex, DB_CLASS, caption, style, wx, wy, ww, wh, owner, NULL, GetModuleHandleW(NULL), &d);
+    if (!dlg) { DeleteObject(d.font); return 0; }
+    dark_title_bar(dlg);
+
+    int x = (cw - btotal) / 2, y = d.bodyH + db_px(&d, 14);
+    for (int i = 0; i < d.nbtn; i++) {
+        d.btn[i] = CreateWindowExW(0, L"BUTTON", d.label[i], WS_CHILD | WS_VISIBLE | WS_TABSTOP | (i == d.def ? BS_DEFPUSHBUTTON : BS_PUSHBUTTON),
+                                   x, y, bw[i], bh, dlg, (HMENU)(INT_PTR)d.ids[i], GetModuleHandleW(NULL), NULL);
+        SendMessageW(d.btn[i], WM_SETFONT, (WPARAM)d.font, TRUE);
+        if (pSetWindowTheme) pSetWindowTheme(d.btn[i], L"DarkMode_Explorer", NULL);
+        x += bw[i] + bgap;
+    }
+    int cancel = 0;
+    for (int i = 0; i < d.nbtn; i++) cancel |= d.ids[i] == IDCANCEL;
+    if (!cancel && !(d.nbtn == 1 && d.ids[0] == IDOK)) EnableMenuItem(GetSystemMenu(dlg, FALSE), SC_CLOSE, MF_BYCOMMAND | MF_GRAYED);
+
+    if (owner) EnableWindow(owner, FALSE);
+    MessageBeep(flags & MB_ICONMASK);
+    ShowWindow(dlg, SW_SHOW);
+    SetForegroundWindow(dlg);
+    SetFocus(d.btn[d.def]);
+
+    MSG msg;
+    while (!d.done) {
+        if (!GetMessageW(&msg, NULL, 0, 0)) { PostQuitMessage((int)msg.wParam); d.result = IDCANCEL; break; }
+        if (msg.message == WM_KEYDOWN && (msg.hwnd == dlg || IsChild(dlg, msg.hwnd))) {
+            if (msg.wParam == VK_RETURN) {
+                HWND f = GetFocus();
+                int id = d.ids[d.def];
+                for (int i = 0; i < d.nbtn; i++) if (d.btn[i] == f) id = d.ids[i];
+                d.result = id; d.done = 1;
+                continue;
+            }
+            if (msg.wParam == VK_ESCAPE) { SendMessageW(dlg, WM_CLOSE, 0, 0); continue; }
+        }
+        if (IsDialogMessageW(dlg, &msg)) continue;
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+    }
+
+    if (owner) EnableWindow(owner, TRUE);
+    DestroyWindow(dlg);
+    if (owner) SetForegroundWindow(owner);
+    DeleteObject(d.font);
+    return d.result;
+}
+
+static int (WINAPI *oMessageBoxW)(HWND, LPCWSTR, LPCWSTR, UINT);
+static int (WINAPI *oMessageBoxA)(HWND, LPCSTR, LPCSTR, UINT);
+
+static int WINAPI hMessageBoxW(HWND o, LPCWSTR text, LPCWSTR caption, UINT flags)
+{
+    int r = dark_message_box(o, text, caption, flags);
+    return r ? r : oMessageBoxW(o, text, caption, flags);
+}
+
+static WCHAR *widen(LPCSTR a)
+{
+    if (!a) return NULL;
+    int n = MultiByteToWideChar(CP_ACP, 0, a, -1, NULL, 0);
+    WCHAR *w = (WCHAR *)HeapAlloc(GetProcessHeap(), 0, (SIZE_T)(n ? n : 1) * sizeof(WCHAR));
+    if (w) { w[0] = 0; MultiByteToWideChar(CP_ACP, 0, a, -1, w, n); }
+    return w;
+}
+
+static int WINAPI hMessageBoxA(HWND o, LPCSTR text, LPCSTR caption, UINT flags)
+{
+    WCHAR *t = widen(text), *c = widen(caption);
+    int r = (t || !text) ? dark_message_box(o, t, c, flags) : 0;
+    if (t) HeapFree(GetProcessHeap(), 0, t);
+    if (c) HeapFree(GetProcessHeap(), 0, c);
+    return r ? r : oMessageBoxA(o, text, caption, flags);
+}
+
 /* Style each list / tree view right after the VCL created its window (also after every re-creation). */
 static HWND (WINAPI *oCreateWindowExW)(DWORD, LPCWSTR, LPCWSTR, DWORD, int, int, int, int, HWND, HMENU, HINSTANCE, LPVOID);
 
@@ -233,9 +542,11 @@ static HWND WINAPI hCreateWindowExW(DWORD ex, LPCWSTR cls, LPCWSTR name, DWORD s
                                     HWND parent, HMENU menu, HINSTANCE inst, LPVOID param)
 {
     HWND wnd = oCreateWindowExW(ex, cls, name, style, x, y, w, h, parent, menu, inst, param);
+    if (wnd && !(style & WS_CHILD)) dark_title_bar(wnd);
     if (wnd && HIWORD(cls) != 0) { /* a string class name, not an atom */
         dark_init_once();
         style_window(wnd);
+        if (style & WS_CHILD) hide_cool_bar_extras(wnd, parent);
     }
     return wnd;
 }
@@ -361,6 +672,172 @@ static int recolor_group_text(DWORD *p, int bg)
     return 1;
 }
 
+/*
+ * Task dialogs (DirectUI) fill their white body and grey button strip straight into a bitmap, so no colour
+ * call can be intercepted. Darken the result after painting instead:
+ *   - neutral light pixels (white, #F0F0F0) and the black text anti-aliasing next to them are inverted,
+ *   - coloured pixels (blue text, the icon) are left alone, and so are large dark neutral blocks that are
+ *     already dark (buttons, command links), together with a 1 px ring around them.
+ */
+static int dui_neutral(DWORD p)
+{
+    int r = p >> 16 & 0xFF, g = p >> 8 & 0xFF, b = p & 0xFF;
+    int hi = r > g ? (r > b ? r : b) : (g > b ? g : b), lo = r < g ? (r < b ? r : b) : (g < b ? g : b);
+    return hi - lo <= 6;
+}
+
+static int dui_lum(DWORD p) { return ((p >> 16 & 0xFF) + (p >> 8 & 0xFF) + (p & 0xFF)) / 3; }
+
+/* Mark the 4-connected component containing `start` (all pixels where match(px) is true); returns its size and bounds. */
+static int dui_component(const DWORD *px, int w, int h, int start, int mode, unsigned char *seen, int *stack, RECT *bb)
+{
+    int n = 0, top = 0;
+    stack[top++] = start; seen[start] = 1;
+    bb->left = bb->right = start % w; bb->top = bb->bottom = start / w;
+    while (top) {
+        int i = stack[--top], x = i % w, y = i / w;
+        n++;
+        if (x < bb->left) bb->left = x;
+        if (x > bb->right) bb->right = x;
+        if (y < bb->top) bb->top = y;
+        if (y > bb->bottom) bb->bottom = y;
+        int nb[4] = { x > 0 ? i - 1 : -1, x < w - 1 ? i + 1 : -1, y > 0 ? i - w : -1, y < h - 1 ? i + w : -1 };
+        for (int k = 0; k < 4; k++) {
+            int j = nb[k];
+            if (j < 0 || seen[j]) continue;
+            DWORD p = px[j] & 0xFFFFFF;
+            int ok = mode == 0 ? (!dui_neutral(p))               /* coloured: icons, blue text */
+                              : (dui_neutral(p) && dui_lum(p) < 100); /* dark neutral: buttons, black text */
+            if (ok) { seen[j] = 1; stack[top++] = j; }
+        }
+    }
+    return n;
+}
+
+static void dui_darken(HDC dc, const RECT *rc)
+{
+    Snap s;
+    if (!snap_begin(dc, rc, NULL, &s)) return;
+    int w = s.w, h = s.h;
+    long long n = (long long)w * h;
+    if (n > 600000) { snap_free(&s); return; }
+    unsigned char *prot = (unsigned char *)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, (SIZE_T)n * 3);
+    int *stack = (int *)HeapAlloc(GetProcessHeap(), 0, (SIZE_T)n * sizeof(int));
+    if (!prot || !stack) { if (prot) HeapFree(GetProcessHeap(), 0, prot); if (stack) HeapFree(GetProcessHeap(), 0, stack); snap_free(&s); return; }
+    unsigned char *seen = prot + n, *light = prot + 2 * n;
+    unsigned char lut[256];
+    for (int v = 0; v < 256; v++) lut[v] = GetRValue(xform(RGB(v, v, v)));
+    int dark = lut[255];
+
+#define LIGHTN(i) (dui_neutral(s.px[i] & 0xFFFFFF) && (s.px[i] & 0xFF) >= 170)
+
+    /* protect icons (prot = 2) and already dark blocks (prot = 1) */
+    RECT icons[8];
+    int nicons = 0;
+    for (int mode = 0; mode < 2; mode++) {
+        ZeroMemory(seen, (SIZE_T)n);
+        for (int i = 0; i < n; i++) {
+            DWORD p = s.px[i] & 0xFFFFFF;
+            int start = mode == 0 ? !dui_neutral(p) : (dui_neutral(p) && dui_lum(p) < 100);
+            if (!start || seen[i]) continue;
+            RECT bb;
+            int cnt = dui_component(s.px, w, h, i, mode, seen, stack, &bb);
+            int bw = bb.right - bb.left + 1, bh = bb.bottom - bb.top + 1;
+            int keep = mode == 0 ? (bw >= 16 && bh >= 16 && bw <= 80 && bh <= 80 && cnt * 100 / (bw * bh) >= 40) /* a filled icon, not a letter or a frame */
+                                 : (cnt >= 400);                                                                 /* an already dark block */
+            if (!keep) continue;
+            if (mode == 0 && nicons < 8) {
+                icons[nicons].left = bb.left > 0 ? bb.left - 1 : 0;
+                icons[nicons].top = bb.top > 0 ? bb.top - 1 : 0;
+                icons[nicons].right = bb.right < w - 1 ? bb.right + 1 : w - 1;
+                icons[nicons].bottom = bb.bottom < h - 1 ? bb.bottom + 1 : h - 1;
+                nicons++;
+            }
+            for (int y = bb.top - 1; y <= bb.bottom + 1; y++)
+                for (int x = bb.left - 1; x <= bb.right + 1; x++)
+                    if (x >= 0 && y >= 0 && x < w && y < h) { if (mode == 1) prot[y * w + x] = 1; else if (!prot[y * w + x]) prot[y * w + x] = 2; }
+        }
+    }
+
+    /* light background: everywhere outside protection; inside an icon box only what touches the box edge */
+    for (int i = 0; i < n; i++) light[i] = prot[i] == 0 && LIGHTN(i);
+    for (int k = 0; k < nicons; k++) {
+        RECT q = icons[k];
+        int top = 0;
+        for (int y = q.top; y <= q.bottom; y++)
+            for (int x = q.left; x <= q.right; x++) {
+                int i = y * w + x;
+                if ((x == q.left || x == q.right || y == q.top || y == q.bottom) && prot[i] == 2 && LIGHTN(i) && !light[i]) { light[i] = 1; stack[top++] = i; }
+            }
+        while (top) {
+            int i = stack[--top], x = i % w, y = i / w;
+            int nb[4] = { x > q.left ? i - 1 : -1, x < q.right ? i + 1 : -1, y > q.top ? i - w : -1, y < q.bottom ? i + w : -1 };
+            for (int m = 0; m < 4; m++) {
+                int j = nb[m];
+                if (j >= 0 && !light[j] && prot[j] == 2 && LIGHTN(j)) { light[j] = 1; stack[top++] = j; }
+            }
+        }
+    }
+
+    /* recolour into a copy of the decisions, so neighbours are judged on the original pixels */
+    DWORD *out = (DWORD *)HeapAlloc(GetProcessHeap(), 0, (SIZE_T)n * sizeof(DWORD));
+    if (out) {
+        CopyMemory(out, s.px, (SIZE_T)n * sizeof(DWORD));
+        int changed = 0;
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                int i = y * w + x;
+                DWORD p = s.px[i];
+                if (prot[i] == 1) continue;
+                int near_light = light[i];
+                for (int dy = -2; dy <= 2 && !near_light; dy++)
+                    for (int dx = -2; dx <= 2; dx++) {
+                        int xx = x + dx, yy = y + dy;
+                        if (xx >= 0 && yy >= 0 && xx < w && yy < h && light[yy * w + xx]) { near_light = 1; break; }
+                    }
+                if (!near_light) continue;
+                if (dui_neutral(p & 0xFFFFFF)) {
+                    if (prot[i] == 2 && !light[i]) continue;
+                    unsigned v = lut[p & 0xFF];
+                    out[i] = (p & 0xFF000000) | (v << 16) | (v << 8) | v;
+                    changed = 1;
+                } else {
+                    /* anti-aliased edge of coloured text on the light background: take the white share out of the blend */
+                    int tc = 255;
+                    for (int dy = -2; dy <= 2; dy++)
+                        for (int dx = -2; dx <= 2; dx++) {
+                            int xx = x + dx, yy = y + dy;
+                            if (xx < 0 || yy < 0 || xx >= w || yy >= h || prot[yy * w + xx] == 1) continue;
+                            DWORD q = s.px[yy * w + xx];
+                            if (dui_neutral(q & 0xFFFFFF)) continue;
+                            int mn = (int)(q >> 16 & 0xFF) < (int)(q >> 8 & 0xFF) ? (int)(q >> 16 & 0xFF) : (int)(q >> 8 & 0xFF);
+                            if ((int)(q & 0xFF) < mn) mn = (int)(q & 0xFF);
+                            if (mn < tc) tc = mn;
+                        }
+                    int r = p >> 16 & 0xFF, g = p >> 8 & 0xFF, b = p & 0xFF;
+                    int t = r < g ? (r < b ? r : b) : (g < b ? g : b);
+                    if (t > tc && tc < 255) {
+                        int sub = (t - tc) * (255 - dark) / (255 - tc);
+                        r -= sub; g -= sub; b -= sub;
+                        if (r < 0) r = 0;
+                        if (g < 0) g = 0;
+                        if (b < 0) b = 0;
+                        out[i] = (p & 0xFF000000) | ((DWORD)r << 16) | ((DWORD)g << 8) | (DWORD)b;
+                        changed = 1;
+                    }
+                }
+            }
+        }
+        if (changed) { CopyMemory(s.px, out, (SIZE_T)n * sizeof(DWORD)); snap_commit(dc, &s); } else snap_free(&s);
+        HeapFree(GetProcessHeap(), 0, out);
+    } else {
+        snap_free(&s);
+    }
+    HeapFree(GetProcessHeap(), 0, prot);
+    HeapFree(GetProcessHeap(), 0, stack);
+#undef LIGHTN
+}
+
 /* Post-paint fix for the list view's group header text. */
 static BOOL (WINAPI *oEndPaint)(HWND, const PAINTSTRUCT *);
 
@@ -375,6 +852,7 @@ static BOOL WINAPI hEndPaint(HWND h, const PAINTSTRUCT *ps)
             if (changed) snap_commit(ps->hdc, &s); else snap_free(&s);
         }
     }
+    else if (ps && GetClassNameW(h, cls, 64) && lstrcmpW(cls, L"DirectUIHWND") == 0) dui_darken(ps->hdc, &ps->rcPaint);
     return oEndPaint(h, ps);
 }
 
@@ -406,12 +884,46 @@ static HRESULT  (WINAPI *oGetThemeColor)(HTHEME_, int, int, int, COLORREF *);
 static COLORREF (WINAPI *oGetThemeSysColor)(HTHEME_, int);
 static BOOL     (WINAPI *oGradientFill)(HDC, TRIVERTEX *, ULONG, PVOID, ULONG, ULONG);
 
+/*
+ * The drop-down arrow of the toolbar's split buttons is drawn by the theme as a flat neutral dark grey
+ * (#282828), which vanishes on the dark toolbar and on its blue hover fill. It is recognised as a small
+ * group (6 to 60 pixels) of one neutral dark colour; the backgrounds are either larger or tinted.
+ * Anti-aliased chevrons consist of many colours and never form such a group.
+ */
+static int neutral_dark(DWORD c)
+{
+    int r = c >> 16 & 0xFF, g = c >> 8 & 0xFF, b = c & 0xFF;
+    return r == g && g == b && r < 100;
+}
+
+static void brighten_flat_glyph(HDC dc, const RECT *r)
+{
+    Snap s;
+    if (!snap_begin(dc, r, NULL, &s)) return;
+    long long n = (long long)s.w * s.h;
+    int changed = 0;
+    if (n <= 1000) {
+        for (long long i = 0; i < n; i++) {
+            DWORD c = s.px[i] & 0x00FFFFFF;
+            if (!neutral_dark(c) || c == 0x00C0C0C0) continue;
+            long long same = 0;
+            for (long long j = 0; j < n; j++) same += (s.px[j] & 0x00FFFFFF) == c;
+            if (same >= 6 && same <= 60) {
+                for (long long j = 0; j < n; j++) if ((s.px[j] & 0x00FFFFFF) == c) s.px[j] = (s.px[j] & 0xFF000000) | 0x00C0C0C0;
+                changed = 1;
+            }
+        }
+    }
+    if (changed) snap_commit(dc, &s); else snap_free(&s);
+}
+
 static HRESULT WINAPI hDrawThemeBackground(HTHEME_ th, HDC dc, int part, int state, const RECT *r, const RECT *clip)
 {
     Snap s;
     int ok = r && snap_begin(dc, r, clip, &s);
     HRESULT hr = oDrawThemeBackground(th, dc, part, state, r, clip);
     if (ok) snap_end(dc, &s);
+    if (r && part == 4 && r->right - r->left <= 20 && r->bottom - r->top <= 30) brighten_flat_glyph(dc, r);
     return hr;
 }
 
@@ -645,8 +1157,18 @@ static void install(void)
         patch_delay_iat(cc, "uxtheme.dll", "DrawThemeParentBackground", hDrawThemeParentBackground);
     }
 
+    HMODULE du = LoadLibraryA("DUser.dll");
+    if (du) {
+        patch_iat(du, "user32.dll", "EndPaint", hEndPaint);
+    }
+
     oCreateWindowExW = real("user32.dll", "CreateWindowExW");
     patch_iat(exe, "user32.dll", "CreateWindowExW", hCreateWindowExW);
+
+    oMessageBoxW = real("user32.dll", "MessageBoxW");
+    oMessageBoxA = real("user32.dll", "MessageBoxA");
+    patch_iat(exe, "user32.dll", "MessageBoxW", hMessageBoxW);
+    patch_iat(exe, "user32.dll", "MessageBoxA", hMessageBoxA);
 }
 
 /* ---------- dinput8 proxy ---------- */
