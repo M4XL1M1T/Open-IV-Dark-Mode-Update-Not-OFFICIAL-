@@ -192,7 +192,6 @@ static LRESULT WINAPI hSendMessageW(HWND h, UINT msg, WPARAM w, LPARAM l)
 }
 
 static HRESULT (WINAPI *pSetWindowTheme)(HWND, LPCWSTR, LPCWSTR);
-static HHOOK g_hook;
 
 static void dark_init_once(void)
 {
@@ -227,19 +226,18 @@ static void style_window(HWND h)
     }
 }
 
-/* Style each control once, on the first paint/size message after it was created. */
-static LRESULT CALLBACK callRetProc(int code, WPARAM w, LPARAM l)
+/* Style each list / tree view right after the VCL created its window (also after every re-creation). */
+static HWND (WINAPI *oCreateWindowExW)(DWORD, LPCWSTR, LPCWSTR, DWORD, int, int, int, int, HWND, HMENU, HINSTANCE, LPVOID);
+
+static HWND WINAPI hCreateWindowExW(DWORD ex, LPCWSTR cls, LPCWSTR name, DWORD style, int x, int y, int w, int h,
+                                    HWND parent, HMENU menu, HINSTANCE inst, LPVOID param)
 {
-    if (code == HC_ACTION) {
-        const CWPRETSTRUCT *c = (const CWPRETSTRUCT *)l;
-        if (c->hwnd && (c->message == WM_SIZE || c->message == WM_PAINT || c->message == WM_ERASEBKGND) &&
-            !GetPropW(c->hwnd, L"oivdark")) {
-            SetPropW(c->hwnd, L"oivdark", (HANDLE)1);
-            dark_init_once();
-            style_window(c->hwnd);
-        }
+    HWND wnd = oCreateWindowExW(ex, cls, name, style, x, y, w, h, parent, menu, inst, param);
+    if (wnd && HIWORD(cls) != 0) { /* a string class name, not an atom */
+        dark_init_once();
+        style_window(wnd);
     }
-    return CallNextHookEx(g_hook, code, w, l);
+    return wnd;
 }
 
 /* ---------- pixel filter for parts we cannot recolour through a colour call ---------- */
@@ -647,7 +645,8 @@ static void install(void)
         patch_delay_iat(cc, "uxtheme.dll", "DrawThemeParentBackground", hDrawThemeParentBackground);
     }
 
-    g_hook = SetWindowsHookExW(WH_CALLWNDPROCRET, callRetProc, NULL, GetCurrentThreadId());
+    oCreateWindowExW = real("user32.dll", "CreateWindowExW");
+    patch_iat(exe, "user32.dll", "CreateWindowExW", hCreateWindowExW);
 }
 
 /* ---------- dinput8 proxy ---------- */
