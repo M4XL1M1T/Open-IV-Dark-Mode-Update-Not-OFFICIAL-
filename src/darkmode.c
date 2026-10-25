@@ -1095,6 +1095,35 @@ static void *real(const char *dll, const char *fn)
 }
 
 
+#ifdef OPENIV_NO_NETWORK
+/*
+ * Optional "offline" build: while it starts, OpenIV asks one host after the other (api.openiv.com, ntscorp.ru,
+ * openiv.com, openiv.sannybuilder.com) for store and update information. The original service is no longer
+ * maintained, so on a slow or filtered connection the start waits for these requests to fail. Refuse the
+ * hosts right away, the VCL reports it like any other failed connection. Subdomains are included. Links that
+ * open in the browser are not affected, and every other host is left alone. The price is that OpenIV can no
+ * longer check for updates or load store data.
+ */
+static LPVOID (WINAPI *oWinHttpConnect)(LPVOID, LPCWSTR, WORD, DWORD);
+
+static int host_is(LPCWSTR host, LPCWSTR name)
+{
+    int hl = lstrlenW(host), nl = lstrlenW(name);
+    if (hl < nl) return 0;
+    if (lstrcmpiW(host + hl - nl, name) != 0) return 0;
+    return hl == nl || host[hl - nl - 1] == L'.';
+}
+
+static LPVOID WINAPI hWinHttpConnect(LPVOID session, LPCWSTR host, WORD port, DWORD reserved)
+{
+    if (host && (host_is(host, L"openiv.com") || host_is(host, L"ntscorp.ru") || host_is(host, L"openiv.sannybuilder.com"))) {
+        SetLastError(12029); /* ERROR_WINHTTP_CANNOT_CONNECT */
+        return NULL;
+    }
+    return oWinHttpConnect(session, host, port, reserved);
+}
+#endif
+
 static void install(void)
 {
     HMODULE exe = GetModuleHandleA(NULL);
@@ -1169,6 +1198,11 @@ static void install(void)
     oMessageBoxA = real("user32.dll", "MessageBoxA");
     patch_iat(exe, "user32.dll", "MessageBoxW", hMessageBoxW);
     patch_iat(exe, "user32.dll", "MessageBoxA", hMessageBoxA);
+
+#ifdef OPENIV_NO_NETWORK
+    oWinHttpConnect = real("winhttp.dll", "WinHttpConnect");
+    if (oWinHttpConnect) patch_iat(exe, "winhttp.dll", "WinHttpConnect", hWinHttpConnect);
+#endif
 }
 
 /* ---------- dinput8 proxy ---------- */

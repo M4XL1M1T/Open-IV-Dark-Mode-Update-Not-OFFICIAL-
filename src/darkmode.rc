@@ -13,7 +13,11 @@ BEGIN
     BEGIN
         BLOCK "040904B0"
         BEGIN
+            #ifdef OPENIV_NO_NETWORK
+            VALUE "FileDescription", "OpenIV dark mode helper, offline variant (unofficial, not affiliated with OpenIV)"
+#else
             VALUE "FileDescription", "OpenIV dark mode helper (unofficial, not affiliated with OpenIV)"
+#endif
             VALUE "FileVersion", "0.1.2"
             VALUE "InternalName", "darkmode"
             VALUE "OriginalFilename", "dinput8.dll"

@@ -34,6 +34,14 @@ That is all, there is nothing to configure. You do **not** need to change `Appli
 
 Delete or rename `dinput8.dll` in the OpenIV folder.
 
+## Offline variant (pre-release)
+
+While it starts, OpenIV asks one host after the other (`api.openiv.com`, `ntscorp.ru`, `openiv.com`, `openiv.sannybuilder.com`) for store and update information. The original service is no longer maintained, so on a slow or filtered connection the start may wait for these requests to fail. The **offline variant** is the same dark mode, but it refuses connections to exactly these hosts (subdomains included) at once. Links that open in the browser and every other host are not touched.
+
+The price is that OpenIV can no longer check for updates or load store data. On a normal connection the start is not noticeably faster, because the servers still answer right away. The variant is tested on one PC (no connections at startup, no error message), but not on a really slow or blocked connection.
+
+Download `OpenIV-DarkMode-v0.1.2-offline.zip` from the [pre-release](../../releases) and use its `dinput8.dll` instead of the normal one (same file name, do not use both). To build it yourself, add `-DOPENIV_NO_NETWORK` to the compiler command and to the `windres` command.
+
 ## How it works
 
 OpenIV loads `dinput8.dll` from its own folder before it looks at the system copy. The DLL forwards `DirectInput8Create` unchanged to the real `dinput8.dll` and, on load, redirects the colour and drawing functions of `OpenIV.exe` and `comctl32.dll` (import table patching). Light colours are darkened and dark text is lightened. In addition:
@@ -62,6 +70,8 @@ i686-w64-mingw32-windres src/darkmode.rc -O coff -o darkmode.res.o
 i686-w64-mingw32-gcc -shared -O2 -o dinput8.dll src/darkmode.c darkmode.res.o -Wl,--kill-at -static -luser32 -lgdi32
 ```
 
+For the offline variant add `-DOPENIV_NO_NETWORK` to both commands.
+
 ## Known limitations
 
 - The main window, the two message boxes and the "Create new archive" task dialog are tested. Settings and other dialogs are not, so some light areas may remain there. Task dialogs with other elements (expandable text, check boxes, progress bars) are untested.
@@ -73,6 +83,7 @@ i686-w64-mingw32-gcc -shared -O2 -o dinput8.dll src/darkmode.c darkmode.res.o -W
 
 ## Changelog
 
+- **0.1.2 offline** (pre-release) The same as 0.1.2, but refuses the start-up requests to the unmaintained OpenIV servers.
 - **0.1.2** Dark title bars on every Windows theme, dark message boxes and task dialogs, visible drop-down arrows (also on hover), removed the Video tutorials link and the full screen button, README correction (no `Application.xml` change needed).
 - **0.1.1** No keyboard-hook API, version information in the DLL, notes about antivirus false positives.
 - **0.1.0** First release.
