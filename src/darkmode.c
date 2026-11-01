@@ -14,6 +14,9 @@
 #include <windows.h>
 #include <math.h>
 
+static int g_font_pct;     /* font size in percent, see "font size" below */
+static HINSTANCE g_dll;    /* this DLL, to find the settings file next to it */
+
 /* ---------- colour transform ---------- */
 
 static float hue2rgb(float p, float q, float t)
@@ -406,11 +409,12 @@ static int dark_message_box(HWND owner, const WCHAR *text, const WCHAR *caption,
     if (owner) owner = GetAncestor(owner, GA_ROOT);
 
     HDC sdc = GetDC(NULL);
-    d.scale100 = MulDiv(GetDeviceCaps(sdc, LOGPIXELSX), 100, 96);
+    d.scale100 = MulDiv(MulDiv(GetDeviceCaps(sdc, LOGPIXELSX), 100, 96), g_font_pct, 100);
     NONCLIENTMETRICSW ncm;
     ZeroMemory(&ncm, sizeof ncm);
     ncm.cbSize = sizeof ncm;
     SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof ncm, &ncm, 0);
+    ncm.lfMessageFont.lfHeight = MulDiv(ncm.lfMessageFont.lfHeight, g_font_pct, 100);
     d.font = CreateFontIndirectW(&ncm.lfMessageFont);
     HFONT of = (HFONT)SelectObject(sdc, d.font);
 
@@ -856,6 +860,50 @@ static BOOL WINAPI hEndPaint(HWND h, const PAINTSTRUCT *ps)
     return oEndPaint(h, ps);
 }
 
+/* ---------- font size ---------- */
+
+/*
+ * OpenIV is not DPI aware, so on a large screen at 100 percent its text is small. Every font the application
+ * (or a common control) creates is scaled by a percentage, read once at start.
+ */
+static int g_font_pct = 100;
+static HFONT (WINAPI *oCreateFontIndirectW)(const LOGFONTW *);
+static HFONT (WINAPI *oCreateFontW)(int, int, int, int, int, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, LPCWSTR);
+
+static HFONT WINAPI hCreateFontIndirectW(const LOGFONTW *lf)
+{
+    if (lf && g_font_pct != 100 && lf->lfHeight) {
+        LOGFONTW n = *lf;
+        n.lfHeight = MulDiv(n.lfHeight, g_font_pct, 100);
+        if (n.lfWidth) n.lfWidth = MulDiv(n.lfWidth, g_font_pct, 100);
+        return oCreateFontIndirectW(&n);
+    }
+    return oCreateFontIndirectW(lf);
+}
+
+static HFONT WINAPI hCreateFontW(int h, int w, int esc, int orient, int weight, DWORD it, DWORD ul, DWORD so,
+                                 DWORD cs, DWORD op, DWORD cp, DWORD q, DWORD pf, LPCWSTR face)
+{
+    if (g_font_pct != 100 && h) {
+        h = MulDiv(h, g_font_pct, 100);
+        if (w) w = MulDiv(w, g_font_pct, 100);
+    }
+    return oCreateFontW(h, w, esc, orient, weight, it, ul, so, cs, op, cp, q, pf, face);
+}
+
+/* Optional settings file next to the DLL: OpenIV-DarkMode.ini with "[Font]" and "Scale=150" (percent, 50 to 300). */
+static void read_font_scale(void)
+{
+    WCHAR path[MAX_PATH];
+    DWORD n = g_dll ? GetModuleFileNameW(g_dll, path, MAX_PATH) : 0;
+    if (!n || n >= MAX_PATH) return;
+    while (n > 0 && path[n - 1] != L'\\') n--;
+    if (n + 20 >= MAX_PATH) return;
+    lstrcpyW(path + n, L"OpenIV-DarkMode.ini");
+    int v = (int)GetPrivateProfileIntW(L"Font", L"Scale", 100, path);
+    if (v >= 50 && v <= 300) g_font_pct = v;
+}
+
 /* ---------- visual styles (uxtheme) + gradients, bound via GetProcAddress / delay load ---------- */
 
 typedef HANDLE HTHEME_;
@@ -1171,6 +1219,14 @@ static void install(void)
     patch_iat(exe, "gdi32.dll", "CreatePenIndirect", hCreatePenIndirect);
     patch_iat(exe, "gdi32.dll", "ExtCreatePen", hExtCreatePen);
 
+    read_font_scale();
+    oCreateFontIndirectW = real("gdi32.dll", "CreateFontIndirectW");
+    oCreateFontW         = real("gdi32.dll", "CreateFontW");
+    if (g_font_pct != 100) {
+        patch_iat(exe, "gdi32.dll", "CreateFontIndirectW", hCreateFontIndirectW);
+        patch_iat(exe, "gdi32.dll", "CreateFontW", hCreateFontW);
+    }
+
     /* The native common controls (header, toolbar, ...) read system colours and draw themes themselves. */
     HMODULE cc = GetModuleHandleA("comctl32.dll");
     if (cc) {
@@ -1227,6 +1283,7 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved)
     (void)reserved;
     if (reason == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(inst);
+        g_dll = inst;
         install();
     }
     return TRUE;

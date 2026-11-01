@@ -1,8 +1,8 @@
 #include <winver.h>
 
 1 VERSIONINFO
-FILEVERSION 0,1,2,0
-PRODUCTVERSION 0,1,2,0
+FILEVERSION 0,1,3,0
+PRODUCTVERSION 0,1,3,0
 FILEFLAGSMASK 0x3fL
 FILEFLAGS 0
 FILEOS VOS_NT_WINDOWS32
@@ -18,11 +18,11 @@ BEGIN
 #else
             VALUE "FileDescription", "OpenIV dark mode helper (unofficial, not affiliated with OpenIV)"
 #endif
-            VALUE "FileVersion", "0.1.2"
+            VALUE "FileVersion", "0.1.3"
             VALUE "InternalName", "darkmode"
             VALUE "OriginalFilename", "dinput8.dll"
             VALUE "ProductName", "Open IV Dark-Mode Update (Not OFFICIAL)"
-            VALUE "ProductVersion", "0.1.2"
+            VALUE "ProductVersion", "0.1.3"
             VALUE "LegalCopyright", "MIT License. Source: github.com/M4XL1M1T/Open-IV-Dark-Mode-Update-Not-OFFICIAL-"
             VALUE "Comments", "Loaded by OpenIV in place of dinput8.dll, forwards DirectInput8Create to the system DLL."
         END

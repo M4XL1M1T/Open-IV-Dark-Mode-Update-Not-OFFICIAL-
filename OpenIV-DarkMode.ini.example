@@ -1,0 +1,5 @@
+[Font]
+; Font size in percent (50 to 300). 100 is the normal size, try 125 or 150 on a large screen.
+; Needs a restart of OpenIV. Delete this file to go back to the default.
+Scale=100
+
