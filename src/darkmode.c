@@ -16,6 +16,9 @@
 
 static int g_font_pct;     /* font size in percent, see "font size" below */
 static HINSTANCE g_dll;    /* this DLL, to find the settings file next to it */
+static int g_dark = 1;         /* [General] DarkMode: 0 leaves the colours, dialogs and title bars as they are */
+static int g_hide_buttons = 1; /* [General] HideButtons: hide the Video tutorials link and the full screen button */
+static int g_offline;          /* [General] Offline: 1 refuses the start-up requests to the OpenIV servers */
 
 /* ---------- colour transform ---------- */
 
@@ -546,11 +549,10 @@ static HWND WINAPI hCreateWindowExW(DWORD ex, LPCWSTR cls, LPCWSTR name, DWORD s
                                     HWND parent, HMENU menu, HINSTANCE inst, LPVOID param)
 {
     HWND wnd = oCreateWindowExW(ex, cls, name, style, x, y, w, h, parent, menu, inst, param);
-    if (wnd && !(style & WS_CHILD)) dark_title_bar(wnd);
+    if (wnd && g_dark && !(style & WS_CHILD)) dark_title_bar(wnd);
     if (wnd && HIWORD(cls) != 0) { /* a string class name, not an atom */
-        dark_init_once();
-        style_window(wnd);
-        if (style & WS_CHILD) hide_cool_bar_extras(wnd, parent);
+        if (g_dark) { dark_init_once(); style_window(wnd); }
+        if (g_hide_buttons && (style & WS_CHILD)) hide_cool_bar_extras(wnd, parent);
     }
     return wnd;
 }
@@ -891,8 +893,14 @@ static HFONT WINAPI hCreateFontW(int h, int w, int esc, int orient, int weight, 
     return oCreateFontW(h, w, esc, orient, weight, it, ul, so, cs, op, cp, q, pf, face);
 }
 
-/* Optional settings file next to the DLL: OpenIV-DarkMode.ini with "[Font]" and "Scale=150" (percent, 50 to 300). */
-static void read_font_scale(void)
+/*
+ * Optional settings file next to the DLL: OpenIV-DarkMode.ini
+ *   [Font]    Scale=150          font size in percent, 50 to 300
+ *   [General] DarkMode=0         0 keeps OpenIV light (the other settings still apply)
+ *             HideButtons=0      0 keeps the Video tutorials link and the full screen button
+ *             Offline=1          1 refuses the start-up requests to the OpenIV servers (default 0)
+ */
+static void read_settings(void)
 {
     WCHAR path[MAX_PATH];
     DWORD n = g_dll ? GetModuleFileNameW(g_dll, path, MAX_PATH) : 0;
@@ -902,6 +910,9 @@ static void read_font_scale(void)
     lstrcpyW(path + n, L"OpenIV-DarkMode.ini");
     int v = (int)GetPrivateProfileIntW(L"Font", L"Scale", 100, path);
     if (v >= 50 && v <= 300) g_font_pct = v;
+    g_dark = GetPrivateProfileIntW(L"General", L"DarkMode", 1, path) != 0;
+    g_hide_buttons = GetPrivateProfileIntW(L"General", L"HideButtons", 1, path) != 0;
+    g_offline = GetPrivateProfileIntW(L"General", L"Offline", 0, path) != 0;
 }
 
 /* ---------- visual styles (uxtheme) + gradients, bound via GetProcAddress / delay load ---------- */
@@ -1143,9 +1154,8 @@ static void *real(const char *dll, const char *fn)
 }
 
 
-#ifdef OPENIV_NO_NETWORK
 /*
- * Optional "offline" build: while it starts, OpenIV asks one host after the other (api.openiv.com, ntscorp.ru,
+ * Optional offline mode ([General] Offline=1): while it starts, OpenIV asks one host after the other (api.openiv.com, ntscorp.ru,
  * openiv.com, openiv.sannybuilder.com) for store and update information. The original service is no longer
  * maintained, so on a slow or filtered connection the start waits for these requests to fail. Refuse the
  * hosts right away, the VCL reports it like any other failed connection. Subdomains are included. Links that
@@ -1170,11 +1180,11 @@ static LPVOID WINAPI hWinHttpConnect(LPVOID session, LPCWSTR host, WORD port, DW
     }
     return oWinHttpConnect(session, host, port, reserved);
 }
-#endif
 
 static void install(void)
 {
     HMODULE exe = GetModuleHandleA(NULL);
+    read_settings();
 
     /* DrawThemeText forwards to DrawThemeTextEx even if the exe never asks for it itself */
     HMODULE ux = LoadLibraryA("uxtheme.dll");
@@ -1203,7 +1213,8 @@ static void install(void)
     oEndPaint            = real("user32.dll", "EndPaint");
     oGetProcAddress      = (FARPROC(WINAPI *)(HMODULE, LPCSTR))real("kernel32.dll", "GetProcAddress");
 
-    /* OpenIV.exe: VCL drawing and run-time bound uxtheme / msimg32 */
+    /* OpenIV.exe: VCL drawing and run-time bound uxtheme / msimg32 (only for the dark mode) */
+    if (g_dark) {
     patch_iat(exe, "kernel32.dll", "GetProcAddress", hGetProcAddress);
     patch_iat(exe, "user32.dll", "SendMessageW", hSendMessageW);
     patch_iat(exe, "user32.dll", "DrawEdge", hDrawEdge);
@@ -1218,8 +1229,8 @@ static void install(void)
     patch_iat(exe, "gdi32.dll", "CreateBrushIndirect", hCreateBrushIndirect);
     patch_iat(exe, "gdi32.dll", "CreatePenIndirect", hCreatePenIndirect);
     patch_iat(exe, "gdi32.dll", "ExtCreatePen", hExtCreatePen);
+    }
 
-    read_font_scale();
     oCreateFontIndirectW = real("gdi32.dll", "CreateFontIndirectW");
     oCreateFontW         = real("gdi32.dll", "CreateFontW");
     if (g_font_pct != 100) {
@@ -1229,7 +1240,7 @@ static void install(void)
 
     /* The native common controls (header, toolbar, ...) read system colours and draw themes themselves. */
     HMODULE cc = GetModuleHandleA("comctl32.dll");
-    if (cc) {
+    if (g_dark && cc) {
         patch_iat(cc, "user32.dll", "GetSysColor", hGetSysColor);
         patch_iat(cc, "user32.dll", "GetSysColorBrush", hGetSysColorBrush);
         patch_iat(cc, "user32.dll", "DrawEdge", hDrawEdge);
@@ -1242,23 +1253,25 @@ static void install(void)
         patch_delay_iat(cc, "uxtheme.dll", "DrawThemeParentBackground", hDrawThemeParentBackground);
     }
 
-    HMODULE du = LoadLibraryA("DUser.dll");
+    HMODULE du = g_dark ? LoadLibraryA("DUser.dll") : NULL;
     if (du) {
         patch_iat(du, "user32.dll", "EndPaint", hEndPaint);
     }
 
     oCreateWindowExW = real("user32.dll", "CreateWindowExW");
-    patch_iat(exe, "user32.dll", "CreateWindowExW", hCreateWindowExW);
+    if (g_dark || g_hide_buttons) patch_iat(exe, "user32.dll", "CreateWindowExW", hCreateWindowExW);
 
     oMessageBoxW = real("user32.dll", "MessageBoxW");
     oMessageBoxA = real("user32.dll", "MessageBoxA");
-    patch_iat(exe, "user32.dll", "MessageBoxW", hMessageBoxW);
-    patch_iat(exe, "user32.dll", "MessageBoxA", hMessageBoxA);
+    if (g_dark) {
+        patch_iat(exe, "user32.dll", "MessageBoxW", hMessageBoxW);
+        patch_iat(exe, "user32.dll", "MessageBoxA", hMessageBoxA);
+    }
 
-#ifdef OPENIV_NO_NETWORK
-    oWinHttpConnect = real("winhttp.dll", "WinHttpConnect");
-    if (oWinHttpConnect) patch_iat(exe, "winhttp.dll", "WinHttpConnect", hWinHttpConnect);
-#endif
+    if (g_offline) {
+        oWinHttpConnect = real("winhttp.dll", "WinHttpConnect");
+        if (oWinHttpConnect) patch_iat(exe, "winhttp.dll", "WinHttpConnect", hWinHttpConnect);
+    }
 }
 
 /* ---------- dinput8 proxy ---------- */

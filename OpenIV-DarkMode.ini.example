@@ -1,5 +1,11 @@
+[General]
+; DarkMode: 1 = dark (default), 0 = keep OpenIV light
+DarkMode=1
+; HideButtons: 1 = hide the Video tutorials link and the full screen button (default), 0 = show them
+HideButtons=1
+; Offline: 0 = normal (default), 1 = do not contact the OpenIV servers at start (no update check, no store data)
+Offline=0
+
 [Font]
 ; Font size in percent (50 to 300). 100 is the normal size, try 125 or 150 on a large screen.
-; Needs a restart of OpenIV. Delete this file to go back to the default.
 Scale=100
-
