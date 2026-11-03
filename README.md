@@ -42,6 +42,7 @@ Offline=0
 
 [Font]
 Scale=100
+ScaleEditor=0
 ```
 
 | Setting | Default | Meaning |
@@ -50,10 +51,11 @@ Scale=100
 | `HideButtons` | `1` | `0` shows the Video tutorials link and the full screen button again |
 | `Offline` | `0` | `1` refuses the requests OpenIV sends to its servers while it starts, see below |
 | `Scale` | `100` | Font size in percent, 50 to 300, for example `125` or `150` on a large screen |
+| `ScaleEditor` | `0` | `1` also scales the text editor and other fixed-pitch fonts, see below |
 
 ### Font size
 
-OpenIV is not DPI aware, so its text gets small on a large screen (for example 2560x1440 at 100 percent). `Scale` enlarges it. What is scaled: the file list, the tree view, the column headers, the status bar and the DLL's own message boxes. What is not: the address bar, the toolbar with its icons and the group headers ("Folder (6)"), because OpenIV gives those a fixed size. When I tried to scale them the text was cut off. At 150 percent and more not every column fits into the window any more, resize the columns by hand. Tested at 125, 150 and 200 percent.
+OpenIV is not DPI aware, so its text gets small on a large screen (for example 2560x1440 at 100 percent). `Scale` enlarges it. What is scaled: the file list, the tree view, the column headers, the status bar and the DLL's own message boxes. The text editor (and any other fixed-pitch font, such as the hex view) is **not** scaled by default, because big XML files got lines that did not fit any more. Set `ScaleEditor=1` if you want it scaled too. What is not scaled either: the address bar, the toolbar with its icons and the group headers ("Folder (6)"), because OpenIV gives those a fixed size. When I tried to scale them the text was cut off. At 150 percent and more not every column fits into the window any more, resize the columns by hand. Tested at 125, 150 and 200 percent.
 
 ### Offline
 
@@ -106,6 +108,7 @@ i686-w64-mingw32-gcc -shared -O2 -o dinput8.dll src/darkmode.c darkmode.res.o -W
 
 ## Changelog
 
+- **0.1.5** The text editor and other fixed-pitch fonts keep their normal size when `Scale` is set, new setting `ScaleEditor=1` scales them too (asked for by a user whose big XML files got cut off).
 - **0.1.4** Everything is switched in `OpenIV-DarkMode.ini`: `DarkMode` (keep OpenIV light), `HideButtons` (keep the Video tutorials link and the full screen button), `Offline` (no start-up requests to the OpenIV servers, replaces the separate offline build) and `Scale`. Defaults are unchanged: dark, buttons hidden, online, 100 percent.
 - **0.1.3** Adjustable font size through `OpenIV-DarkMode.ini` (asked for by a user with a 2K screen). The optional offline variant is part of this release now.
 - **0.1.2 offline** (pre-release) The same as 0.1.2, but refuses the start-up requests to the unmaintained OpenIV servers.

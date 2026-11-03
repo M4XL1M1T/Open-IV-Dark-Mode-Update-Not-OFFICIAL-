@@ -9,3 +9,5 @@ Offline=0
 [Font]
 ; Font size in percent (50 to 300). 100 is the normal size, try 125 or 150 on a large screen.
 Scale=100
+; ScaleEditor: 0 = the text editor and other fixed-pitch fonts keep their normal size (default), 1 = scale them too
+ScaleEditor=0

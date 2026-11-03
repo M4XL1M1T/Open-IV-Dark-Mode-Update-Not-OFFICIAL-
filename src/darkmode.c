@@ -18,6 +18,7 @@ static int g_font_pct;     /* font size in percent, see "font size" below */
 static HINSTANCE g_dll;    /* this DLL, to find the settings file next to it */
 static int g_dark = 1;         /* [General] DarkMode: 0 leaves the colours, dialogs and title bars as they are */
 static int g_hide_buttons = 1; /* [General] HideButtons: hide the Video tutorials link and the full screen button */
+static int g_scale_mono;       /* [Font] ScaleEditor: 1 also scales fixed-pitch fonts (text editor, hex view) */
 static int g_offline;          /* [General] Offline: 1 refuses the start-up requests to the OpenIV servers */
 
 /* ---------- colour transform ---------- */
@@ -870,11 +871,28 @@ static BOOL WINAPI hEndPaint(HWND h, const PAINTSTRUCT *ps)
  */
 static int g_font_pct = 100;
 static HFONT (WINAPI *oCreateFontIndirectW)(const LOGFONTW *);
-static HFONT (WINAPI *oCreateFontW)(int, int, int, int, int, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, LPCWSTR);
+
+/* A fixed-pitch font (the text editor uses Consolas, the hex view a similar one). TMPF_FIXED_PITCH is set for variable pitch. */
+static int font_is_mono(HFONT f)
+{
+    HDC dc = CreateCompatibleDC(NULL);
+    if (!dc) return 0;
+    HGDIOBJ old = SelectObject(dc, f);
+    TEXTMETRICW tm;
+    int mono = GetTextMetricsW(dc, &tm) && !(tm.tmPitchAndFamily & TMPF_FIXED_PITCH);
+    SelectObject(dc, old);
+    DeleteDC(dc);
+    return mono;
+}
 
 static HFONT WINAPI hCreateFontIndirectW(const LOGFONTW *lf)
 {
     if (lf && g_font_pct != 100 && lf->lfHeight) {
+        if (!g_scale_mono) {
+            HFONT plain = oCreateFontIndirectW(lf);
+            if (plain && font_is_mono(plain)) return plain;
+            if (plain) DeleteObject(plain);
+        }
         LOGFONTW n = *lf;
         n.lfHeight = MulDiv(n.lfHeight, g_font_pct, 100);
         if (n.lfWidth) n.lfWidth = MulDiv(n.lfWidth, g_font_pct, 100);
@@ -886,16 +904,19 @@ static HFONT WINAPI hCreateFontIndirectW(const LOGFONTW *lf)
 static HFONT WINAPI hCreateFontW(int h, int w, int esc, int orient, int weight, DWORD it, DWORD ul, DWORD so,
                                  DWORD cs, DWORD op, DWORD cp, DWORD q, DWORD pf, LPCWSTR face)
 {
-    if (g_font_pct != 100 && h) {
-        h = MulDiv(h, g_font_pct, 100);
-        if (w) w = MulDiv(w, g_font_pct, 100);
-    }
-    return oCreateFontW(h, w, esc, orient, weight, it, ul, so, cs, op, cp, q, pf, face);
+    LOGFONTW lf;
+    ZeroMemory(&lf, sizeof lf);
+    lf.lfHeight = h; lf.lfWidth = w; lf.lfEscapement = esc; lf.lfOrientation = orient; lf.lfWeight = weight;
+    lf.lfItalic = (BYTE)it; lf.lfUnderline = (BYTE)ul; lf.lfStrikeOut = (BYTE)so; lf.lfCharSet = (BYTE)cs;
+    lf.lfOutPrecision = (BYTE)op; lf.lfClipPrecision = (BYTE)cp; lf.lfQuality = (BYTE)q; lf.lfPitchAndFamily = (BYTE)pf;
+    if (face) lstrcpynW(lf.lfFaceName, face, LF_FACESIZE);
+    return hCreateFontIndirectW(&lf);
 }
 
 /*
  * Optional settings file next to the DLL: OpenIV-DarkMode.ini
  *   [Font]    Scale=150          font size in percent, 50 to 300
+ *             ScaleEditor=1      1 also scales the text editor (fixed-pitch fonts), default 0
  *   [General] DarkMode=0         0 keeps OpenIV light (the other settings still apply)
  *             HideButtons=0      0 keeps the Video tutorials link and the full screen button
  *             Offline=1          1 refuses the start-up requests to the OpenIV servers (default 0)
@@ -910,6 +931,7 @@ static void read_settings(void)
     lstrcpyW(path + n, L"OpenIV-DarkMode.ini");
     int v = (int)GetPrivateProfileIntW(L"Font", L"Scale", 100, path);
     if (v >= 50 && v <= 300) g_font_pct = v;
+    g_scale_mono = GetPrivateProfileIntW(L"Font", L"ScaleEditor", 0, path) != 0;
     g_dark = GetPrivateProfileIntW(L"General", L"DarkMode", 1, path) != 0;
     g_hide_buttons = GetPrivateProfileIntW(L"General", L"HideButtons", 1, path) != 0;
     g_offline = GetPrivateProfileIntW(L"General", L"Offline", 0, path) != 0;
@@ -1232,7 +1254,6 @@ static void install(void)
     }
 
     oCreateFontIndirectW = real("gdi32.dll", "CreateFontIndirectW");
-    oCreateFontW         = real("gdi32.dll", "CreateFontW");
     if (g_font_pct != 100) {
         patch_iat(exe, "gdi32.dll", "CreateFontIndirectW", hCreateFontIndirectW);
         patch_iat(exe, "gdi32.dll", "CreateFontW", hCreateFontW);
